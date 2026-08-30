@@ -64,8 +64,6 @@ Unlike the base tutorial (which relied on a public/private IP split), this envir
 
 **Field-name correction:** the field is `Source_Network_Address` (capitalized, underscored — matching Windows' raw XML field naming) — not the lowercase `source_network_address` originally assumed. This was silently causing the query to return zero results despite matching events genuinely existing in the index. Confirmed by manually expanding a real event's full field list in Splunk rather than trusting an assumed name. **This is inconsistent across event types** — see 4.2 below, where the lowercase form turned out to be correct.
 
-**[Screenshot needed: 4624 alert returning a real result in Splunk Statistics tab, showing Source_Network_Address = 192.168.10.101 — suggested filename: `4624-detection-query-result.png`]**
-
 ### 4.2 — Brute-Force Threshold, Time-Windowed (Event ID 4625) — [VERIFIED]
 
 ```spl
@@ -84,8 +82,6 @@ A rolling time window was chosen over a flat count specifically to distinguish t
 - With exactly 5 real failed attempts generated during testing, `where recent_failures > 5` can mathematically never trigger (it requires a 6th attempt to exceed 5). Corrected to `>= 5`.
 
 **Window sizing note:** `time_window=90s` was tuned against real observed data — 5 manually-generated failed login attempts (see Section 5, Phase 1) spanned a full 51 seconds due to the manual pace of triggering each one individually. A production deployment tuned against genuine automated brute-force tooling (which operates on the order of seconds, not tens of seconds) would likely use a much tighter window, closer to the original `10s` design intent.
-
-**[Screenshot needed: 4625 alert in Triggered Alerts history showing multiple fired entries — suggested filename: `4625-triggered-alerts-history.png`]**
 
 ### 4.3 — Kerberoasting Detection (Event ID 4769) — [VERIFIED]
 
@@ -126,8 +122,6 @@ Five wrong passwords were attempted this way (generating 5 real 4625 events, tim
 - Even with RDP enabled, jsmith's login was rejected with "account not active for remote desktop" until explicitly added to the local Remote Desktop Users group: `net localgroup "Remote Desktop Users" mydifr\jsmith /add`. Enabling RDP does not, by itself, authorize any given user to use it.
 
 **Result:** Alert 4.2 (brute-force threshold) fired correctly on the 5 manual failures; Alert 4.1 (unauthorized successful logon) fired correctly on the final successful login.
-
-**[Screenshot needed: Kali terminal showing the xfreerdp failed-attempt sequence, or the resulting 4625 events in Splunk — suggested filename: `bruteforce-xfreerdp-attempts.png`]**
 
 ### Phase 2 — Kerberoasting (T1558.003) — [VERIFIED]
 
