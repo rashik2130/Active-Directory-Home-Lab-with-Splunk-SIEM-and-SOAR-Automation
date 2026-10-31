@@ -137,7 +137,7 @@ The ticket came back as `$krb5tgs$23$...`. The `23` means RC4 encryption, which 
 
 ![GetUserSPNs output showing the RC4 ($23$) ticket hash](images/kerberoast-rc4-hash-dump.png)
 
-**Cracking.** hashcat wouldn't run in the VM (no GPU, and the CPU-only OpenCL runtime was far too slow), so I switched to John the Ripper, which runs natively on CPU:
+**Cracking.** hashcat's GPU mode wasn't available in the VM, and its CPU-only OpenCL runtime (POCL) was impractically slow once installed, so I switched to John the Ripper, which runs natively on CPU:
 
 ```bash
 john --format=krb5tgs --wordlist=<wordlist> svc-sql-hash.txt
@@ -161,7 +161,7 @@ Set-ADUser -Identity svc-sql -KerberosEncryptionType AES128,AES256
 
 When I reran the same attack, the ticket came back as `$krb5tgs$18$` (AES256) instead of `$23$` (RC4). John, with the same wordlist containing the real password, returned **"No password hashes loaded"**, so it couldn't process the AES ticket at all.
 
-**What this proves and what it doesn't:** the hardening worked, and the account now only issues AES tickets, so the attack that broke the RC4 ticket no longer works. AES tickets are much harder to crack than RC4, but I didn't test a cracking attempt with a tool configured for AES.
+**What this proves and what it doesn't:** the hardening worked, and the account now only issues AES tickets. The original cracking command (John in RC4 mode) couldn't process the AES ticket at all. That shows the specific tool/command I used no longer works, not that AES is uncrackable — I didn't run an AES-compatible cracking attempt to test that directly.
 
 ![AES ($18$) ticket and John's "No password hashes loaded"](images/aes-hash-and-failed-crack.png)
 
@@ -200,9 +200,9 @@ There's no automated response. Rotating a service account's password automatical
 
 ## Design decisions
 
-- **Account disable needs approval, IP block doesn't.** Disabling the wrong account locks a real employee out of everything. Blocking an IP is low impact and easy to undo.
+- **Account disable needs approval, IP block doesn't.** Disabling the wrong account locks a real employee out of everything. Blocking an IP is lower impact and easy to undo in this lab, where each IP maps to one attacker machine — in production, a shared or NAT'd IP could belong to many legitimate users, so that step would need more care.
 - **The account holder is notified in parallel, not as a gate.** Waiting on them would slow containment, and their inbox may be compromised.
-- **Hardening is separate from detection.** Detection reacts after an attack. Removing RC4 prevents this specific attack.
+- **Hardening is separate from detection.** Detection reacts after an attack. Removing RC4 eliminates the weaker encryption option; Kerberoasting itself is still possible against an AES-only account, it just can't be cracked the same way.
 - **Documented limits instead of fragile workarounds.** For both the Shuffle and Splunk blockers, I documented the root cause and the correct production fix rather than adding workarounds around platform restrictions.
 
 ---
