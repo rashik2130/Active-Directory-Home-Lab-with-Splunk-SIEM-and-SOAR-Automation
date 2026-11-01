@@ -1,8 +1,8 @@
 # Active Directory Home Lab with Splunk SIEM and SOAR Automation
 
-I built a small Active Directory network in VirtualBox, attacked it in two stages (password brute force, then Kerberoasting), wrote Splunk detections that caught both attacks on real event data, hardened the targeted account, and built an automated alerting and response workflow with Shuffle SOAR.
+I built a small Active Directory network in VirtualBox, attacked it two ways (password brute force, then Kerberoasting), wrote Splunk detections that caught both attacks on real event data, hardened the account I targeted, and set up an automated alerting/response workflow with Shuffle SOAR.
 
-Built on MYDFIR's *Active Directory Project 2.0* series, then extended with a second attack stage, two original detections, an encryption-hardening test, and a redesigned response workflow (see [What I added](#what-i-added-beyond-the-tutorial)).
+Started from MYDFIR's *Active Directory Project 2.0* series, then I extended it with a second attack stage, two of my own detections, an encryption hardening test, and a reworked response workflow (more on that in [What I added](#what-i-added-beyond-the-tutorial)).
 
 ---
 
@@ -14,8 +14,8 @@ Built on MYDFIR's *Active Directory Project 2.0* series, then extended with a se
 | Unauthorized logon detection (Event 4624) | ✅ Fired on the attacker's successful login |
 | Kerberoasting detection (Event 4769) | ✅ Isolated the attacker's RC4 ticket request from normal traffic |
 | Kerberoasting attack | ✅ Service ticket dumped and password cracked |
-| RC4 → AES hardening | ✅ Account now issues AES tickets only; the same cracking tool could no longer process the ticket |
-| Shuffle SOAR workflow | ✅ Ran end to end (Slack + email), ⚠️ alert messages don't yet include incident details |
+| RC4 → AES hardening | ✅ Account now issues AES tickets only, the same cracking tool could no longer process the ticket |
+| Shuffle SOAR workflow | ✅ Ran end to end (Slack + email), ⚠️ alert messages don't include incident details yet |
 | IP-block response script | ✅ Works when run manually, ⚠️ Splunk-triggered version blocked by a platform permission issue |
 | Account disable | ⚠️ Manual analyst step (cloud SOAR couldn't reach the domain controller) |
 
@@ -25,7 +25,7 @@ Built on MYDFIR's *Active Directory Project 2.0* series, then extended with a se
 
 ## Environment
 
-All VMs run locally in VirtualBox on a NAT Network (`192.168.10.0/24`).
+Everything runs locally in VirtualBox on a NAT Network (`192.168.10.0/24`).
 
 | VM | Role | IP | OS / Specs |
 |---|---|---|---|
@@ -36,9 +36,9 @@ All VMs run locally in VirtualBox on a NAT Network (`192.168.10.0/24`).
 
 **Logging:** Splunk Universal Forwarder on both Windows machines sends Security, System, and Application logs plus Sysmon (SwiftOnSecurity config) to the `mydifr-ad` index.
 
-**Accounts:** `jsmith` (standard domain user, the brute-force target), `svc-sql` (service account, the Kerberoasting target), and `localadmin` (local admin on the workstation). All passwords shown in this writeup are lab-only.
+**Accounts:** `jsmith` is the standard domain user I targeted with brute force, `svc-sql` is the service account I targeted with Kerberoasting, and `localadmin` is the local admin I used for machine-level config. Every password in this writeup is lab-only.
 
-> The domain is spelled `mydifr.local` instead of `mydfir.local` because of a typo during DC promotion. I kept it rather than demote and re-promote, and kept all later config consistent with it.
+> The domain is spelled `mydifr.local` instead of `mydfir.local` because I typo'd it during DC promotion. I kept it instead of demoting and re-promoting, and kept everything after that consistent with the typo.
 
 ---
 
@@ -50,13 +50,13 @@ Brute force (T1110)            →  jsmith's password recovered
 Kerberoasting (T1558.003)      →  jsmith's access used to steal and crack svc-sql's password
 ```
 
-I chained the two attacks on purpose: real compromises usually escalate from initial access to further credential theft, rather than happening as isolated techniques.
+I chained these on purpose instead of building two separate demos. Real compromises usually escalate from initial access into further credential theft, so I wanted the lab to actually show that.
 
 ---
 
 ## Detections
 
-All three queries were tested against real attack data. Every field name was checked by expanding a real captured event, which turned out to matter (see [Lessons learned](#lessons-learned)).
+I tested all three queries against real attack data, and I checked every field name by expanding a real captured event first. That turned out to matter a lot, see [Lessons learned](#lessons-learned).
 
 ### 1. Unauthorized successful logon (Event 4624)
 
@@ -67,7 +67,7 @@ index=mydifr-ad EventCode=4624
 | stats count by _time, ComputerName, Source_Network_Address, user, Logon_Type
 ```
 
-The base tutorial flagged public IPs, but this lab is fully internal, so I used an allowlist of the two legitimate hosts instead. Any successful logon from anywhere else is flagged.
+The base tutorial flagged public IPs, but my lab is fully internal, so I used an allowlist of the two legitimate hosts instead. Anything logging in successfully from outside that list gets flagged.
 
 ### 2. Brute force within a time window (Event 4625)
 
@@ -78,11 +78,11 @@ index=mydifr-ad EventCode=4625 LogName=Security
 | where recent_failures >= 5
 ```
 
-A rolling window separates rapid guessing from slow background noise, like an old cached password retrying every few hours.
+I used a rolling window so this separates fast tool-driven guessing from slow background noise, like an old cached password retrying every few hours.
 
-- `sort 0 _time` is required: `streamstats` needs oldest-first order, and Splunk returns newest-first by default.
-- The threshold is `>= 5` because my test generated exactly 5 failures, so `> 5` could never fire.
-- The 90-second window fits my manual test (5 attempts over 51 seconds). Against real automated tools, I'd tighten it to about 10 seconds.
+- `sort 0 _time` is needed because `streamstats` requires oldest-first order, and Splunk returns newest-first by default.
+- I set the threshold to `>= 5` because my test only generated exactly 5 failures, so `> 5` would never have fired.
+- 90 seconds fit my manual test (5 attempts spread over 51 seconds). Against a real automated tool I'd tighten this to around 10 seconds.
 
 ### 3. Kerberoasting (Event 4769)
 
@@ -92,9 +92,9 @@ index=mydifr-ad EventCode=4769 Ticket_Encryption_Type=0x17 Service_Name!="krbtgt
 | where count >= 1
 ```
 
-Modern domains normally use AES (`0x12`) for Kerberos tickets. A request for an RC4 (`0x17`) ticket for a real service account, rather than a machine account, is the signature of a Kerberoasting tool.
+Modern domains normally negotiate AES (`0x12`) for Kerberos tickets, so a request for an RC4 (`0x17`) ticket against a real service account, not a machine account, stands out as a Kerberoasting signature.
 
-The threshold of 1 matches what I tested (one targeted service account). In production I'd raise it to about 3 or more distinct services, to catch one account requesting tickets for many services while ignoring one-off requests.
+I left the threshold at 1 because that's what I tested (one targeted service account). In production I'd bump it to 3+ distinct services, so it catches one account roasting a bunch of SPNs instead of flagging a single normal request.
 
 ![4769 detection result showing jsmith requesting an RC4 ticket for svc-sql from 192.168.10.101](images/4769-detection-query-result.png)
 
@@ -104,21 +104,21 @@ The threshold of 1 matches what I tested (one targeted service account). In prod
 
 ### Phase 1: Brute force over RDP
 
-I first tried Hydra's RDP module. It found the password but **created no Windows logon events** (I confirmed this directly in Event Viewer). The module is marked experimental and appears to check credentials without completing a full logon.
+I started with Hydra's RDP module. It found the password, but **it didn't generate any Windows logon events** (I checked Event Viewer directly to confirm). That module is marked experimental, and it looks like it's validating credentials without completing a full logon.
 
-So I used manual `xfreerdp` connections, which create real events:
+So I switched to manual `xfreerdp` connections instead, which do generate real events:
 
 ```bash
 xfreerdp /v:192.168.10.100 /u:jsmith /p:'<password>' /cert:ignore
 ```
 
-Five wrong passwords produced five 4625 events, and the correct password produced one 4624 event (Logon Type 10, from 192.168.10.101). **Both detections fired.**
+Five wrong passwords gave me five 4625 events, and the correct password gave me one 4624 event (Logon Type 10, from 192.168.10.101). **Both detections fired.**
 
-Getting RDP to accept any login took two separate steps: enabling Remote Desktop (as `localadmin`, because `jsmith` lacks the rights), then adding `jsmith` to the local Remote Desktop Users group.
+Getting RDP to even accept a login took two extra steps first: enabling Remote Desktop (which I had to do as `localadmin`, since `jsmith` doesn't have the rights), then adding `jsmith` to the local Remote Desktop Users group.
 
 ### Phase 2: Kerberoasting
 
-**Setup.** I created a service account with a non-expiring password and registered a fake SQL Server SPN, the way real service accounts are often set up:
+**Setup.** I created a service account with a password that never expires and registered a fake SQL Server SPN on it, the way real service accounts often get set up in the wild:
 
 ```powershell
 New-ADUser -Name "svc-sql" -SamAccountName "svc-sql" -AccountPassword (ConvertTo-SecureString "SuperSecretSvcPass123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
@@ -127,41 +127,41 @@ setspn -A MSSQLSvc/sqlserver.mydifr.local:1433 svc-sql
 
 ![Creating svc-sql and registering its SPN on the domain controller](images/kerberoast-svc-account-spn-setup.png)
 
-**Attack.** Using `jsmith`'s stolen credentials, Impacket requested a service ticket for every account with an SPN:
+**Attack.** Using `jsmith`'s stolen credentials, I ran Impacket to request a service ticket for every SPN-bearing account:
 
 ```bash
 python3 /usr/share/doc/python3-impacket/examples/GetUserSPNs.py mydifr.local/jsmith:'Winter2025!' -dc-ip 192.168.10.10 -request -outputfile svc-sql-hash.txt
 ```
 
-The ticket came back as `$krb5tgs$23$...`. The `23` means RC4 encryption, which can be cracked offline.
+The ticket came back as `$krb5tgs$23$...`. That `23` means RC4 encryption, which is crackable offline.
 
 ![GetUserSPNs output showing the RC4 ($23$) ticket hash](images/kerberoast-rc4-hash-dump.png)
 
-**Cracking.** hashcat's GPU mode wasn't available in the VM, and its CPU-only OpenCL runtime (POCL) was impractically slow once installed, so I switched to John the Ripper, which runs natively on CPU:
+**Cracking.** hashcat's GPU mode wasn't available in the VM, and once I installed its CPU-only OpenCL runtime (POCL), it was way too slow to be practical. So I switched to John the Ripper, which handles this natively on CPU:
 
 ```bash
 john --format=krb5tgs --wordlist=<wordlist> svc-sql-hash.txt
 ```
 
-The password cracked instantly against a targeted wordlist.
+Cracked instantly against a targeted wordlist.
 
 ![John the Ripper cracking the RC4 ticket](images/john-cracked-rc4-hash.png)
 
 ### Phase 3: Hardening (RC4 → AES)
 
-I restricted the service account to AES encryption only:
+I locked the service account down to AES only:
 
 ```powershell
 Set-ADUser -Identity svc-sql -KerberosEncryptionType AES128,AES256
 ```
 
-`msDS-SupportedEncryptionTypes` read `24` (AES128 + AES256), confirming RC4 was removed.
+`msDS-SupportedEncryptionTypes` came back as `24` (AES128 + AES256), confirming RC4 was gone.
 
 ![Applying AES-only encryption and verifying msDS-SupportedEncryptionTypes = 24](images/aes-hardening-applied.png)
 
-When I reran the same attack, the ticket came back as `$krb5tgs$18$` (AES256) instead of `$23$` (RC4). John, with the same wordlist containing the real password, returned **"No password hashes loaded"**, so it couldn't process the AES ticket at all.
+When I reran the exact same attack, the ticket came back as `$krb5tgs$18$` (AES256) instead of `$23$` (RC4). John, using the same wordlist that already had the real password in it, returned **"No password hashes loaded"**, so it couldn't even process the AES ticket.
 
-**What this proves and what it doesn't:** the hardening worked, and the account now only issues AES tickets. The original cracking command (John in RC4 mode) couldn't process the AES ticket at all. That shows the specific tool/command I used no longer works, not that AES is uncrackable — I didn't run an AES-compatible cracking attempt to test that directly.
+**What this actually proves (and what it doesn't):** the hardening worked, and the account only hands out AES tickets now. The specific command I used before (John in RC4 mode) just can't touch an AES ticket. That shows my tool no longer works against it, not that AES is unbreakable. I never ran an actual AES-capable cracking attempt to test that part.
 
 ![AES ($18$) ticket and John's "No password hashes loaded"](images/aes-hash-and-failed-crack.png)
 
@@ -169,9 +169,9 @@ When I reran the same attack, the ticket came back as `$krb5tgs$18$` (AES256) in
 
 ## Automated response (SOAR)
 
-Splunk alerts trigger a Shuffle workflow through a webhook. Each alert gets a different response level based on how risky an automated action would be.
+Splunk alerts trigger a Shuffle workflow over a webhook. I gave each alert a different response level based on how risky it'd be to automate.
 
-### Unauthorized logon → notify and request approval
+### Unauthorized logon → notify and ask for approval
 
 ```
 Splunk alert → Shuffle webhook → Slack (#alerts)
@@ -179,69 +179,69 @@ Splunk alert → Shuffle webhook → Slack (#alerts)
                                     └── Approval email asking the SOC analyst to review and disable the account
 ```
 
-**Original plan:** after the analyst approves, Shuffle disables the account over LDAP automatically.
+**Original plan:** once the analyst approves, Shuffle disables the account over LDAP on its own.
 
-**What changed:** Shuffle's cloud service only allows outgoing HTTP/HTTPS. I tested an LDAP connection through a working ngrok tunnel, and the tunnel never saw a single connection. So the analyst now disables the account manually (`Disable-ADAccount -Identity jsmith`). The human approval step stays the same. Only who carries out the disable changed.
+**What actually happened:** Shuffle's cloud service only allows outgoing HTTP/HTTPS. I tested an LDAP connection through a working ngrok tunnel and the tunnel never registered a single connection. So instead, the analyst disables the account manually (`Disable-ADAccount -Identity jsmith`). The approval step stayed exactly the same, only who actually flips the switch changed.
 
-**Known gap:** the Slack and email messages arrive, but the account, source IP, and time fields are blank. I never mapped the template to Shuffle's runtime variables. This is an operational gap, because an analyst needs those details to act, and it's the next thing to fix.
+**Known gap:** the Slack and email notifications show up, but the account, source IP, and time fields are blank. I never wired the template to Shuffle's runtime variables. This is a real operational gap since the analyst needs those details to act on it, and it's the next thing I want to fix.
 
 ### Brute force → block the attacker's IP
 
-I wrote a script on the Splunk server (`ip_ban.sh`) that connects to the workstation over key-based SSH and adds a Windows Firewall rule blocking the attacker's IP.
+I wrote a script on the Splunk server (`ip_ban.sh`) that SSHes into the workstation with a key and adds a Windows Firewall rule to block the attacker's IP.
 
-- **Working:** running it manually created and then removed a real block rule (confirmed with `Get-NetFirewallRule`).
-- **Blocked:** when Splunk's "Run a script" alert action triggers it, the script fails (exit code 1). Splunk's internal logs (`index=_internal ip_ban`) showed that the results file sits in a `root`-only directory that the `splunk` user can't read. Splunk marks this alert action as deprecated. Instead of loosening permissions on Splunk's internal folders, I documented it. The proper fix is a packaged custom alert action.
+- **Working:** running it manually created and then removed a real block rule, confirmed with `Get-NetFirewallRule`.
+- **Blocked:** when Splunk's "Run a script" alert action triggers it automatically, it fails (exit code 1). Splunk's internal logs (`index=_internal ip_ban`) showed me the results file sits in a `root`-only directory the `splunk` user can't read. This alert action is marked deprecated by Splunk itself, so instead of loosening permissions on Splunk's own internal folders, I just documented it. The real fix is a packaged custom alert action.
 
 ### Kerberoasting → manual investigation only
 
-There's no automated response. Rotating a service account's password automatically could break a live service that still uses the old password, so that decision is left to a person.
+No automated response here. Auto-rotating a service account's password could break a live service that's still using the old one, so I left that call to a human.
 
 ---
 
 ## Design decisions
 
-- **Account disable needs approval, IP block doesn't.** Disabling the wrong account locks a real employee out of everything. Blocking an IP is lower impact and easy to undo in this lab, where each IP maps to one attacker machine — in production, a shared or NAT'd IP could belong to many legitimate users, so that step would need more care.
-- **The account holder is notified in parallel, not as a gate.** Waiting on them would slow containment, and their inbox may be compromised.
-- **Hardening is separate from detection.** Detection reacts after an attack. Removing RC4 eliminates the weaker encryption option; Kerberoasting itself is still possible against an AES-only account, it just can't be cracked the same way.
-- **Documented limits instead of fragile workarounds.** For both the Shuffle and Splunk blockers, I documented the root cause and the correct production fix rather than adding workarounds around platform restrictions.
+- **Account disable needs approval, IP block doesn't.** Disabling the wrong account locks a real employee out of everything. Blocking an IP is lower stakes and easy to reverse in this lab, where every IP maps to one attacker machine. In production, a shared or NAT'd IP could belong to a bunch of legitimate users, so that step would need more thought.
+- **I notify the account holder in parallel, not as a gate.** Waiting on them first would slow down containment, and their inbox might already be compromised.
+- **Hardening and detection are kept separate.** Detection reacts after something already happened. Removing RC4 just gets rid of the weaker option, Kerberoasting is still technically possible against an AES-only account, it just can't get cracked the same way anymore.
+- **I documented limits instead of forcing workarounds.** For both the Shuffle and Splunk blockers, I wrote up the root cause and the actual production fix instead of hacking around a platform restriction.
 
 ---
 
 ## What I added beyond the tutorial
 
-- A second attack stage (Kerberoasting), plus the RC4 → AES before/after test
-- Two original detections: the time-windowed brute-force alert and the Kerberoasting alert
-- An allowlist-based logon detection, which fits a fully internal network
+- A second attack stage (Kerberoasting), plus the RC4 to AES before/after test
+- Two detections I built myself: the time-windowed brute-force alert and the Kerberoasting alert
+- An allowlist-based logon detection that actually fits a fully internal network
 - Sysmon on both Windows hosts
-- Local VirtualBox build with a dedicated Kali attacker, instead of a cloud VM
+- A local VirtualBox build with a dedicated Kali attacker instead of a cloud VM
 - An IP-block response built on the Splunk side instead of through SOAR
-- Slack Incoming Webhooks instead of Shuffle's Slack app, whose OAuth kept failing
+- Slack Incoming Webhooks instead of Shuffle's Slack app, since its OAuth kept failing
 
 ---
 
 ## Lessons learned
 
-**Verify Splunk field names against a real event every time.** The source IP field was named differently for each event type: `Source_Network_Address` (4624), `src_ip` (4625), and `Client_Address` (4769, where `IpAddress` was blank). A wrong name returns zero results with no error. This took more debugging time than anything else in the project.
+**Check Splunk field names against a real event, every single time.** The source IP field had a different name depending on the event type: `Source_Network_Address` (4624), `src_ip` (4625), and `Client_Address` (4769, where `IpAddress` turned out to be blank). A wrong field name just quietly returns zero results with no error. This ate more of my debugging time than anything else in the project.
 
-**Check the basics before assuming something complex is broken.**
-- After long saved-state pauses, the VM clocks had drifted by about 4 hours, which silently broke alert scheduling. Fixed with `timedatectl set-ntp true`.
-- An alert fired every minute for 20 minutes with no effect because the Shuffle webhook trigger was still set to "stopped."
-- Kali could ping IPs but not resolve hostnames because `/etc/resolv.conf` had no nameserver.
-- Kali's DHCP lease collided with Splunk's static IP, so I gave Kali a static address.
+**Check the basics before assuming something complex broke.**
+- After sitting in a saved state for a while, the VM clocks drifted by about 4 hours, which silently broke alert scheduling. Fixed it with `timedatectl set-ntp true`.
+- An alert fired every minute for 20 minutes straight with zero effect because I'd left the Shuffle webhook trigger set to "stopped."
+- Kali could ping IPs fine but couldn't resolve hostnames because `/etc/resolv.conf` had no nameserver in it.
+- Kali's DHCP lease collided with Splunk's static IP, so I just gave Kali a static one.
 
-**Windows details that aren't obvious:**
-- RDP needs both the feature enabled and the user in the Remote Desktop Users group.
-- Windows OpenSSH reads admin keys from `C:\ProgramData\ssh\administrators_authorized_keys`, not the user's `.ssh` folder, and ignores the file if its permissions are too open.
+**A few Windows things that aren't obvious:**
+- RDP needs both the feature turned on and the user added to the Remote Desktop Users group.
+- Windows OpenSSH reads admin keys from `C:\ProgramData\ssh\administrators_authorized_keys`, not the user's `.ssh` folder, and it'll silently ignore the file if the permissions are too open.
 
-**Tools don't always do what you assume.** Hydra's RDP module found the password but created no logs. hashcat couldn't run without a GPU, so I switched to John.
+**Tools don't always do what you'd expect.** Hydra's RDP module found the password but never logged anything. hashcat couldn't run without a GPU, so I switched to John.
 
 ---
 
 ## Future work
 
-- Fill in the Slack and email templates with the real incident details
-- Rebuild the IP block as a packaged Splunk custom alert action
+- Fill in the Slack and email templates with real incident details
+- Rebuild the IP block as a proper packaged Splunk custom alert action
 - Correlate the brute-force and successful-logon alerts into one higher-confidence alert
-- Self-host Shuffle inside the lab so it can reach the domain controller directly
+- Self-host Shuffle inside the lab so it can actually reach the domain controller
 - Add detections for lateral movement, PowerShell abuse, and pass-the-ticket
-- Design a safe, service-aware way to rotate service account passwords
+- Figure out a safe, service-aware way to auto-rotate service account passwords
